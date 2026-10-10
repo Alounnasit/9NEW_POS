@@ -753,10 +753,16 @@
           >
         </div>
 
-        <button onclick="openAddProductModal()" class="w-full sm:w-auto px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-sm flex items-center justify-center gap-1.5 active:scale-95 transition">
-          <i class="fa-solid fa-plus"></i>
-          <span>ເພີ່ມສິນຄ້າໃໝ່ (Add Product)</span>
-        </button>
+        <div class="flex items-center gap-2 w-full sm:w-auto">
+          <button onclick="loadProductsFromGAS(true)" title="ດຶງຂໍ້ມູນຫຼ້າສຸດຈາກ Google Sheet" class="flex-1 sm:flex-none px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg shadow-sm flex items-center justify-center gap-1.5 active:scale-95 transition">
+            <i class="fa-solid fa-arrows-rotate"></i>
+            <span>ດຶງຈາກ Sheet</span>
+          </button>
+          <button onclick="openAddProductModal()" class="flex-1 sm:flex-none px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-sm flex items-center justify-center gap-1.5 active:scale-95 transition">
+            <i class="fa-solid fa-plus"></i>
+            <span>ເພີ່ມສິນຄ້າໃໝ່ (Add Product)</span>
+          </button>
+        </div>
       </div>
 
       <!-- Products Table View (Scrollable on small devices) -->
@@ -1255,6 +1261,11 @@
       renderCart();
       setupHardwareBarcodeListener();
       updateModeUI();
+
+      // Auto-load products from Google Sheets if in Live mode
+      if (currentMode === 'live' && gasUrl) {
+        loadProductsFromGAS(false);
+      }
 
       // Register Service Worker for PWA
       if ('serviceWorker' in navigator) {
@@ -2118,11 +2129,13 @@
       const price = parseFloat(document.getElementById('form-price').value) || 0;
       const image_url = document.getElementById('form-image').value.trim();
 
+      const newProduct = { id, barcode, name, category, stock, cost, price, image_url };
+
       const existingIndex = products.findIndex(p => p.id === id);
       if (existingIndex !== -1) {
-        products[existingIndex] = { ...products[existingIndex], barcode, name, category, stock, cost, price, image_url };
+        products[existingIndex] = newProduct;
       } else {
-        products.push({ id, barcode, name, category, stock, cost, price, image_url });
+        products.push(newProduct);
       }
 
       saveProducts();
@@ -2130,14 +2143,62 @@
       renderProductsGrid();
       closeAddProductModal();
 
+      // If Live Mode & gasUrl set, sync to Google Spreadsheet
+      if (currentMode === 'live' && gasUrl) {
+        syncProductToGoogleSheets(newProduct);
+      } else {
+        Swal.fire({
+          toast: true,
+          position: 'top-end',
+          icon: 'success',
+          title: 'ບັນທຶກສິນຄ້າຮຽບຮ້ອຍ (Demo)',
+          showConfirmButton: false,
+          timer: 1500
+        });
+      }
+    }
+
+    // Sync product add/update to Google Apps Script
+    async function syncProductToGoogleSheets(product) {
+      if (!gasUrl) return;
+
       Swal.fire({
-        toast: true,
-        position: 'top-end',
-        icon: 'success',
-        title: 'ບັນທຶກສິນຄ້າຮຽບຮ້ອຍ',
-        showConfirmButton: false,
-        timer: 1500
+        title: 'ກຳລັງບັນທຶກລົງ Google Sheet...',
+        text: 'ກະລຸນາລໍຖ້າຈັກໜ່ອຍ',
+        allowOutsideClick: false,
+        didOpen: () => {
+          Swal.showLoading();
+        }
       });
+
+      try {
+        await fetch(gasUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'saveProduct',
+            product: product
+          })
+        });
+
+        Swal.fire({
+          icon: 'success',
+          title: 'ບັນທຶກລົງ Google Sheet ສຳເລັດ!',
+          text: `ສິນຄ້າ "${product.name}" ຖືກບັນທຶກລົງ Sheet ຮຽບຮ້ອຍແລ້ວ`,
+          timer: 2000,
+          showConfirmButton: false
+        });
+      } catch (err) {
+        console.warn('Sync product to GAS error:', err);
+        Swal.fire({
+          icon: 'info',
+          title: 'ສົ່ງຄຳສັ່ງແລ້ວ',
+          text: 'ຫາກເຄືອຂ່າຍຊ້າ ທ່ານສາມາດກົດປຸ່ມ "ດຶງຈາກ Sheet" ເພື່ອກວດສອບຄືນໄດ້',
+          timer: 2000,
+          showConfirmButton: false
+        });
+      }
     }
 
     function editProduct(id) {
@@ -2159,8 +2220,116 @@
           saveProducts();
           renderProductsTable();
           renderProductsGrid();
+
+          if (currentMode === 'live' && gasUrl) {
+            deleteProductFromGoogleSheets(id);
+          } else {
+            Swal.fire({
+              toast: true,
+              position: 'top-end',
+              icon: 'success',
+              title: 'ລຶບສິນຄ້າຮຽບຮ້ອຍ',
+              showConfirmButton: false,
+              timer: 1500
+            });
+          }
         }
       });
+    }
+
+    // Delete product from Google Apps Script
+    async function deleteProductFromGoogleSheets(id) {
+      if (!gasUrl) return;
+      try {
+        await fetch(gasUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: 'deleteProduct',
+            id: id
+          })
+        });
+        Swal.fire({
+          icon: 'success',
+          title: 'ລຶບອອກຈາກ Google Sheet ສຳເລັດ',
+          timer: 1500,
+          showConfirmButton: false
+        });
+      } catch (err) {
+        console.warn('Delete product from GAS error:', err);
+      }
+    }
+
+    // Fetch all products from Google Apps Script
+    async function loadProductsFromGAS(showFeedback = false) {
+      if (!gasUrl) {
+        if (showFeedback) {
+          Swal.fire({
+            icon: 'warning',
+            title: 'ຍັງບໍ່ມີ Web App URL',
+            text: 'ກະລຸນາໄປທີ່ ການຕັ້ງຄ່າ (⚙️) ແລ້ວປ້ອນ Google Apps Script Web App URL ກ່ອນ'
+          });
+        }
+        return;
+      }
+
+      if (showFeedback) {
+        Swal.fire({
+          title: 'ກຳລັງດຶງຂໍ້ມູນຈາກ Google Sheet...',
+          allowOutsideClick: false,
+          didOpen: () => {
+            Swal.showLoading();
+          }
+        });
+      }
+
+      try {
+        const response = await fetch(`${gasUrl}?action=getProducts`);
+        const result = await response.json();
+        if (result && result.status === 'success' && Array.isArray(result.data)) {
+          if (result.data.length > 0) {
+            products = result.data;
+            saveProducts();
+
+            // Refresh categories
+            const catSet = new Set(['ທັງໝົດ']);
+            products.forEach(p => { if (p.category) catSet.add(p.category); });
+            categories = Array.from(catSet);
+
+            renderCategoryPills();
+            renderProductsGrid();
+            renderProductsTable();
+
+            if (showFeedback) {
+              Swal.fire({
+                icon: 'success',
+                title: 'ໂຫຼດຂໍ້ມູນສຳເລັດ!',
+                text: `ພົບສິນຄ້າ ${products.length} ລາຍການຈາກ Google Sheet`,
+                timer: 2000,
+                showConfirmButton: false
+              });
+            }
+          } else {
+            if (showFeedback) {
+              Swal.fire({
+                icon: 'info',
+                title: 'ແຖບ Products ຍັງວ່າງຢູ່',
+                text: 'ຍັງບໍ່ມີລາຍການສິນຄ້າໃນ Sheet ທ່ານສາມາດເພີ່ມສິນຄ້າໃໝ່ໄດ້ເລີຍ'
+              });
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Fetch products from GAS error:', err);
+        if (showFeedback) {
+          Swal.fire({
+            icon: 'error',
+            title: 'ເກີດຂໍ້ຜິດພາດໃນການດຶງຂໍ້ມູນ',
+            text: 'ກະລຸນາກວດສອບ Web App URL ຫຼື ສິດການເຂົ້າເຖິງ (Anyone)'
+          });
+        }
+      }
     }
 
     // --- Sales History ---
@@ -2241,6 +2410,11 @@
         timer: 1500,
         showConfirmButton: false
       });
+
+      // If switched to Live mode & gasUrl set, offer to sync products
+      if (currentMode === 'live' && gasUrl) {
+        loadProductsFromGAS(true);
+      }
     }
 
     async function testGasConnection() {

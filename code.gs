@@ -4,19 +4,23 @@
  * =========================================================================
  * 
  * ຄູ່ມືການຕິດຕັ້ງ:
- * 1. ປ່ຽນ SPREADSHEET_ID ດ້ານລຸ່ມໃຫ້ເປັນ ID ຂອງ Google Sheets ຂອງທ່ານ (ຫຼື ປະຫວ່າງໄວ້ຫາກຕິດ Script ນີ້ກັບ Sheet ໂດຍກົງ)
+ * 1. ປ່ຽນ SPREADSHEET_ID ດ້ານລຸ່ມໃຫ້ເປັນ ID ຂອງ Google Sheets ຂອງທ່ານ
  * 2. ກົດ Deploy > New deployment > Web App
  * 3. Execute as: Me (ອີເມວຂອງທ່ານ)
  * 4. Who has access: Anyone (ທຸກຄົນ)
  * 5. ກັອບປີ້ Web App URL ໄປໃສ່ໃນໜ້າຕັ້ງຄ່າຂອງ index.html
  */
 
-// ໃສ່ Spreadsheet ID ຂອງທ່ານທີ່ນີ້ (ຖ້າ Run ແບບ Bound Script ໃຫ້ປະເປັນ '')
+// ໃສ່ Spreadsheet ID ຂອງທ່ານທີ່ນີ້
 const SPREADSHEET_ID = '1BxrBiox3FQ8CVQJW9Y296d26lzPdZbMqeaX8x_OhWmY';
 
 function getSpreadsheet() {
-  if (SPREADSHEET_ID && SPREADSHEET_ID !== '') {
-    return SpreadsheetApp.openById(SPREADSHEET_ID);
+  if (SPREADSHEET_ID && SPREADSHEET_ID !== '' && SPREADSHEET_ID !== 'YOUR_SPREADSHEET_ID_HERE') {
+    try {
+      return SpreadsheetApp.openById(SPREADSHEET_ID);
+    } catch (e) {
+      return SpreadsheetApp.getActiveSpreadsheet();
+    }
   }
   return SpreadsheetApp.getActiveSpreadsheet();
 }
@@ -42,6 +46,19 @@ function doGet(e) {
       return createJsonResponse({ status: 'success', message: 'Database tabs and headers initialized successfully!' });
     }
 
+    // Fallback GET action for saveProduct
+    if (action === 'saveProduct' && e.parameter.product) {
+      const prod = JSON.parse(e.parameter.product);
+      const res = saveProductRecord(prod);
+      return createJsonResponse({ status: 'success', result: res });
+    }
+
+    // Fallback GET action for deleteProduct
+    if (action === 'deleteProduct' && e.parameter.id) {
+      const res = deleteProductRecord(e.parameter.id);
+      return createJsonResponse({ status: 'success', result: res });
+    }
+
     return createJsonResponse({ status: 'error', message: 'Unknown action: ' + action });
   } catch (err) {
     return createJsonResponse({ status: 'error', message: err.toString() });
@@ -49,10 +66,10 @@ function doGet(e) {
 }
 
 /**
- * Handle POST Requests (ບັນທຶກການຂາຍ, ຕັດສະຕ໋ອກພ້ອມ Lock Concurrency)
+ * Handle POST Requests (ບັນທຶກສິນຄ້າ, ລຶບສິນຄ້າ, ບັນທຶກການຂາຍ, ຕັດສະຕ໋ອກ)
  */
 function doPost(e) {
-  // Concurrency lock using LockService to prevent race conditions during checkout
+  // Concurrency lock using LockService to prevent race conditions during checkout/save
   const lock = LockService.getScriptLock();
   const hasLock = lock.tryLock(15000); // Wait up to 15 seconds
 
@@ -69,7 +86,7 @@ function doPost(e) {
       try {
         postData = JSON.parse(e.postData.contents);
       } catch (err) {
-        postData = e.parameter;
+        postData = e.parameter || {};
       }
     } else if (e && e.parameter) {
       postData = e.parameter;
@@ -77,6 +94,27 @@ function doPost(e) {
 
     const action = postData.action || 'recordSale';
 
+    // 1. ບັນທຶກ ຫຼື ອັບເດດສິນຄ້າ (Add/Update Product)
+    if (action === 'saveProduct') {
+      const product = postData.product;
+      if (!product) {
+        throw new Error('Missing product payload in saveProduct');
+      }
+      const result = saveProductRecord(product);
+      return createJsonResponse({ status: 'success', result: result });
+    }
+
+    // 2. ລຶບສິນຄ້າ (Delete Product)
+    if (action === 'deleteProduct') {
+      const productId = postData.id;
+      if (!productId) {
+        throw new Error('Missing product id in deleteProduct');
+      }
+      const result = deleteProductRecord(productId);
+      return createJsonResponse({ status: 'success', result: result });
+    }
+
+    // 3. ບັນທຶກການຂາຍ & ຕັດສະຕ໋ອກ (Record Sale & Deduct Stock)
     if (action === 'recordSale') {
       const sale = postData.sale;
       if (!sale) {
@@ -100,25 +138,27 @@ function doPost(e) {
  */
 function getProductsList() {
   const ss = getSpreadsheet();
-  const sheet = ss.getSheetByName('Products');
+  let sheet = ss.getSheetByName('Products');
   if (!sheet) {
     setupDatabaseTabs();
-    return [];
+    sheet = ss.getSheetByName('Products');
   }
 
   const values = sheet.getDataRange().getValues();
   if (values.length <= 1) return [];
 
-  const headers = values[0];
   const items = [];
 
   for (let i = 1; i < values.length; i++) {
     const row = values[i];
+    // Ignore completely empty rows
+    if (!row[0] && !row[1] && !row[2]) continue;
+
     items.push({
-      id: String(row[0]),
-      barcode: String(row[1]),
-      name: String(row[2]),
-      category: String(row[3]),
+      id: String(row[0] || ''),
+      barcode: String(row[1] || ''),
+      name: String(row[2] || ''),
+      category: String(row[3] || ''),
       cost: Number(row[4]) || 0,
       price: Number(row[5]) || 0,
       stock: Number(row[6]) || 0,
@@ -127,6 +167,92 @@ function getProductsList() {
   }
 
   return items;
+}
+
+/**
+ * ບັນທຶກ ຫຼື ອັບເດດສິນຄ້າລົງໃນແຖບ Products ຂອງ Google Sheets
+ */
+function saveProductRecord(product) {
+  const ss = getSpreadsheet();
+  let sheet = ss.getSheetByName('Products');
+  if (!sheet) {
+    setupDatabaseTabs();
+    sheet = ss.getSheetByName('Products');
+  }
+
+  const data = sheet.getDataRange().getValues();
+  // Columns: [id, barcode, name, category, cost, price, stock, image_url]
+  let foundRow = -1;
+  const prodId = String(product.id || '').trim();
+  const prodBarcode = String(product.barcode || '').trim();
+
+  for (let i = 1; i < data.length; i++) {
+    const rowId = String(data[i][0] || '').trim();
+    const rowBarcode = String(data[i][1] || '').trim();
+    if ((prodId && rowId === prodId) || (prodBarcode && rowBarcode === prodBarcode)) {
+      foundRow = i + 1; // 1-indexed for Sheet API
+      break;
+    }
+  }
+
+  const rowValues = [
+    prodId,
+    prodBarcode,
+    product.name || '',
+    product.category || '',
+    Number(product.cost) || 0,
+    Number(product.price) || 0,
+    Number(product.stock) || 0,
+    product.image_url || ''
+  ];
+
+  if (foundRow > 0) {
+    // ອັບເດດແຖວເກົ່າ
+    sheet.getRange(foundRow, 1, 1, 8).setValues([rowValues]);
+  } else {
+    // ເພີ່ມແຖວໃໝ່
+    sheet.appendRow(rowValues);
+  }
+
+  // ເພີ່ມໝວດໝູ່ໃໝ່ລົງແຖບ Categories ຫາກຍັງບໍ່ທັນມີ
+  if (product.category) {
+    const catSheet = ss.getSheetByName('Categories');
+    if (catSheet) {
+      const catData = catSheet.getDataRange().getValues();
+      let catExists = false;
+      for (let c = 1; c < catData.length; c++) {
+        if (String(catData[c][1]).trim().toLowerCase() === String(product.category).trim().toLowerCase()) {
+          catExists = true;
+          break;
+        }
+      }
+      if (!catExists) {
+        catSheet.appendRow(['C' + String(catData.length).padStart(3, '0'), product.category]);
+      }
+    }
+  }
+
+  return { success: true, product: product, updated: foundRow > 0 };
+}
+
+/**
+ * ລຶບສິນຄ້າອອກຈາກແຖບ Products
+ */
+function deleteProductRecord(productId) {
+  const ss = getSpreadsheet();
+  const sheet = ss.getSheetByName('Products');
+  if (!sheet) return { success: false, message: 'Products sheet not found' };
+
+  const data = sheet.getDataRange().getValues();
+  const targetId = String(productId || '').trim();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0] || '').trim() === targetId) {
+      sheet.deleteRow(i + 1);
+      return { success: true, id: targetId };
+    }
+  }
+  return { success: false, message: 'Product not found in sheet' };
 }
 
 /**
@@ -202,10 +328,10 @@ function setupDatabaseTabs() {
     prodSheet = ss.insertSheet('Products');
     prodSheet.appendRow(['id', 'barcode', 'name', 'category', 'cost', 'price', 'stock', 'image_url']);
     // Initial sample products
-    prodSheet.appendRow(['P001', '8850123001', 'ນ້ຳດື່ມ ຫົວເສືອ 600ml', 'ເຄື່ອງດື່ມ', 3500, 5000, 50, '']);
-    prodSheet.appendRow(['P002', '8850123002', 'ເບຍລາວ ກະປ໋ອງ 330ml', 'ເຄື່ອງດື່ມ', 11000, 14000, 40, '']);
-    prodSheet.appendRow(['P003', '8850123003', 'ມີ່ ໄວໄວ ໝູສັບ', 'ອາຫານແຫ້ງ', 3000, 4500, 60, '']);
-    prodSheet.appendRow(['P004', '8850123004', 'ເຂົ້າສານ ໜຽວໄກ່ນ້ອຍ (5kg)', 'ອາຫານແຫ້ງ', 75000, 90000, 15, '']);
+    prodSheet.appendRow(['P001', '8850123001', 'ນ້ຳດື່ມ ຫົວເສືອ 600ml', 'ເຄື່ອງດື່ມ', 3500, 5000, 50, 'https://images.unsplash.com/photo-1548839140-29a749e1bc4e?auto=format&fit=crop&w=400&q=80']);
+    prodSheet.appendRow(['P002', '8850123002', 'ເບຍລາວ ກະປ໋ອງ 330ml', 'ເຄື່ອງດື່ມ', 11000, 14000, 40, 'https://images.unsplash.com/photo-1608270546103-97992cbdd836?auto=format&fit=crop&w=400&q=80']);
+    prodSheet.appendRow(['P003', '8850123003', 'ມີ່ ໄວໄວ ໝູສັບ', 'ອາຫານແຫ້ງ', 3000, 4500, 60, 'https://images.unsplash.com/photo-1612927601601-6638404737ce?auto=format&fit=crop&w=400&q=80']);
+    prodSheet.appendRow(['P004', '8850123004', 'ເຂົ້າສານ ໜຽວໄກ່ນ້ອຍ (5kg)', 'ອາຫານແຫ້ງ', 75000, 90000, 15, 'https://images.unsplash.com/photo-1586201375761-83865001e31c?auto=format&fit=crop&w=400&q=80']);
   }
 
   // Sales
